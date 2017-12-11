@@ -136,8 +136,10 @@ def get_batch(split='train'):
     # if training return only feed, else return also label for evaluation
     if split == 'train':
         return feed
-    else:
+    elif split == 'valid':
         return feed, _y
+    else:
+        return feed, _y, batch
 
 def print_accuracy(label, prediction):
     """
@@ -221,15 +223,15 @@ with tf.Graph().as_default():
 
         def attention(memory, reuse):
             with tf.variable_scope("attention", reuse=reuse):
-                # get current batch size
-                batch = tf.shape(attending)[0]
-
                 # extend and tile memory to [BATCH_SIZE, MAX_SENTENCE_SIZE, CELL_SIZE] shape
                 memory = tf.tile(tf.reshape(memory, [-1, 1, CELL_SIZE]), [1, max_sentence_size, 1])
 
                 # interactions between facts, memory and question as described in paper
                 attending = tf.concat([facts * memory, facts * question_tiled,
                    tf.abs(facts - memory), tf.abs(facts - question_tiled)], 2)
+
+                # get current batch size
+                batch = tf.shape(attending)[0]
 
                 # first fully connected layer
                 h1 = tf.matmul(attending, tf.tile(w1, [batch, 1, 1]))
@@ -245,10 +247,11 @@ with tf.Graph().as_default():
 
         # first memory state is question state
         memory = question_state
+        att = []
 
         for p in range(PASSES):
             # get attention from memory (and question and facts which are defined before)
-            att = attention(memory, bool(p))
+            att.append(attention(memory, bool(p)))
 
             # initialize GRU cell for RNN which returns final episodic memory
             gru = tf.contrib.rnn.GRUCell(num_units=CELL_SIZE, reuse=bool(p))
@@ -259,7 +262,7 @@ with tf.Graph().as_default():
 
             # in each step update state with attention (how much to keep from past)
             def body(state, i):
-                state = att[:,i,:] * gru(facts[:,i,:], state)[0] + (1 - att[:,i,:]) * state
+                state = att[-1][:,i,:] * gru(facts[:,i,:], state)[0] + (1 - att[-1][:,i,:]) * state
                 return state, i + 1
 
             # get episode by applying GRU attention
@@ -319,6 +322,7 @@ with tf.Graph().as_default():
         sess.run(tf.global_variables_initializer())
         writer.add_graph(sess.graph)
 
+
         for i in range(ITERATIONS):
             feed = get_batch('train')
 
@@ -338,20 +342,28 @@ with tf.Graph().as_default():
                 print_accuracy(val_label, val_pred)
 
         # after training is complete test on held out set
-        test_feed, test_label = get_batch('valid')
-        summary_val, test_pred = sess.run([summary_batch, pred_label], test_feed)
+        test_feed, test_label, test_batch = get_batch('test')
+        summary_val, test_pred, attentions = sess.run([summary_batch, pred_label, att], test_feed)
         writer_val.add_summary(summary_val, i)
 
         print("\n\n\nTEST SET\n")
         print_accuracy(test_label, test_pred)
 
 
+        """
+        print out sample sentences with attention scores through episodes
+        """
 
+        test_text = [x['text'] for x in test_batch]
+        test_question = [x['question'] for x in test_batch]
 
+        attentions = np.transpose(np.squeeze(attentions), [1,2,0])
+        sentence_attentions = [list(zip(x, y)) for x, y in zip(test_text, attentions)]
 
-
-
-
-
-
+        sample_indexes = random.sample(range(len(test_text)), 10)
+        for i in sample_indexes:
+            print('Question:', test_question[i])
+            for item in sentence_attentions[i]:
+                print(item[0], '\t', item[1])
+            print('\n\n')
 
